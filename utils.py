@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Created on Mon May 18 17:28:29 2020
+
+@author: dexter
 """
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
@@ -285,6 +287,7 @@ def evaluate_model(loader, model, num_classes, T=1, algo=None):
         
         ce_losses = []
 
+        pred_probs = []
         pred_all = []
         GT_all = []
         
@@ -339,6 +342,9 @@ def evaluate_model(loader, model, num_classes, T=1, algo=None):
             predictions_list.extend(predictions.cpu().detach().numpy().tolist())
             confidence_vals_list.extend(confidence_vals.cpu().detach().numpy().tolist())
 
+            pred_probs.append(class_pred)
+
+        pred_probs = torch.cat(pred_probs)
         pred_all = torch.cat(pred_all)
         GT_all = torch.cat(GT_all)
         
@@ -355,10 +361,158 @@ def evaluate_model(loader, model, num_classes, T=1, algo=None):
         brier = sum(brier_error_list)/len(brier_error_list)
 
         adaece = adaptive_expected_calibration_error(confidence_vals_list, predictions_list, labels_list ).item()
+        cece = classwise_calibration_error(pred_probs.cpu(), labels_list, num_classes ).item()
         KS_error_max = KSE_func(confidence_vals_list, predictions_list, labels_list)
 
 
-        return avg_ce_loss, scores, accuracy, F1, ECE, MCE, adaece, KS_error_max
+        return avg_ce_loss, scores, accuracy, F1, ECE, cece, adaece, KS_error_max
+
+def evaluate_GMM(loader, model, fuse_factor):
+    """
+    Parameters
+    ----------
+    loader : Dataloader
+        Validation dataset
+    model : TYPE
+        DESCRIPTION.
+    
+    Using only 3-channel RGB model
+    
+    Returns
+    -------
+    RMSE and CCC values for both Arousal and Valence predictions,
+    Classification report
+    """
+    
+    model.eval()
+    cpu = torch.device('cpu')
+    
+    with torch.no_grad():
+        
+        error_V, error_A = 0.0, 0.0
+        CCC_V = []
+        CCC_A = []
+        corr_V = []
+        corr_A = []
+        
+        mse_losses = []
+        ce_losses = []
+        cos_losses = []
+
+        pred_all = []
+        GT_all = []
+        
+        num_correct_classes = 0
+        num_samples_classes = 0 #4000
+        num_samples = 0 #4500
+
+        labels_list = []
+        predictions_list = []
+        confidence_vals_list = []
+        
+        NLL_error_list = []
+        brier_error_list = []
+        
+        for count, (x, y, labels, GMM_label) in enumerate(loader):
+            
+            x = x.to(device = device)
+            y = y.to(device = device)
+            labels = labels.to(device = device)
+            GMM_label = GMM_label.to(device = device)
+
+            #forward
+            _, score, logits = model(x)
+
+            class_pred = F.softmax(logits, dim=1)
+            classes = torch.argmax(class_pred, dim=1)
+            
+            pred_all.append(classes)
+            GT_all.append(labels)
+            
+            valence_pred = score[:,0]
+            arousal_pred = score[:,1]
+            
+            MSE_loss = MSE(score, y)
+                        
+            onehot = convert_to_onehot(labels).to(device) #convert classes to onehot representation
+            
+            beta = fuse_factor
+            va_onehot = beta * onehot + (1 - beta) * GMM_label
+            y_idx = np.where(onehot.cpu() ==1) 
+            
+            CE_loss = negative_log_likelihood(class_pred, va_onehot, None)
+            cos_loss = cosine_loss(class_pred, va_onehot, None)
+
+            mse_losses.append(MSE_loss.item())
+            ce_losses.append(CE_loss.item())
+            cos_losses.append(cos_loss.item())
+            
+            error_V += torch.sum( torch.square(valence_pred - y[:, 0]) )
+            error_A += torch.sum( torch.square(arousal_pred - y[:, 1]) )
+            
+            ccc_v, corr_v = compute_CCC( y[:, 0].to(cpu), valence_pred.to(cpu))
+            ccc_a, corr_a = compute_CCC( y[:, 1].to(cpu), arousal_pred.to(cpu))
+             
+            CCC_V.append(ccc_v)
+            CCC_A.append(ccc_a)
+            corr_V.append(corr_v)
+            corr_A.append(corr_a)
+            
+            #pdb.set_trace()
+            num_correct_classes += torch.sum(torch.eq(classes, labels )).item()
+            num_samples += len(x)
+            num_samples_classes += len(labels)
+
+            compare_array = torch.eq(class_pred.argmax(1), labels )
+
+            wrong_idx = torch.where(compare_array == 0) # index of misclassified samples
+            wrong_probs = class_pred[wrong_idx] #predicted probabilites of misclassified samples
+            
+            NLL_error = -torch.sum(onehot[wrong_idx] * torch.log(wrong_probs), dim=1).mean() # measure the NLL of misclassified samples
+            brier_error = torch.square(onehot[wrong_idx] - wrong_probs).mean() # measure the brier loss of misclassified samples
+            
+            NLL_error_list.append(NLL_error.item() )
+            brier_error_list.append(brier_error.item() )
+
+            confidence_vals, predictions = torch.max(class_pred, dim=1)
+
+            labels_list.extend(labels.cpu().numpy().tolist())
+            predictions_list.extend(predictions.cpu().detach().numpy().tolist())
+            confidence_vals_list.extend(confidence_vals.cpu().detach().numpy().tolist())
+
+                
+        error_V = error_V.to(cpu)
+        error_A = error_A.to(cpu)
+        
+        mse_V = error_V/ num_samples
+        mse_A = error_A/ num_samples
+        
+        CCC_Valence = np.mean(CCC_V)
+        CCC_Arousal = np.mean(CCC_A)
+        
+        Corr_V = np.mean(corr_V)
+        Corr_A = np.mean(corr_A)
+        
+        pred_all = torch.cat(pred_all)
+        GT_all = torch.cat(GT_all)
+        
+        #pdb.set_trace()
+        scores = metrics.classification_report(GT_all.to(cpu), pred_all.to(cpu), digits = 4)
+        #conf_mat = metrics.confusion_matrix(y_true=GT_all.to(cpu), y_pred=pred_all.to(cpu))
+        F1 = metrics.f1_score(GT_all.to(cpu), pred_all.to(cpu), average='macro')
+        accuracy = num_correct_classes/num_samples_classes
+
+        avg_mse_loss = sum(mse_losses)/len(mse_losses)
+        avg_ce_loss = sum(ce_losses)/len(ce_losses)
+        avg_cos_loss = sum(cos_losses)/len(cos_losses)
+
+        #compute ECE here
+        ECE = expected_calibration_error(confidence_vals_list, predictions_list, labels_list, num_bins=10)
+        MCE = maximum_calibration_error(confidence_vals_list, predictions_list, labels_list, num_bins=10)
+        NLL = sum(NLL_error_list)/len(NLL_error_list)
+        brier = sum(brier_error_list)/len(brier_error_list)
+
+        return avg_mse_loss, avg_ce_loss, avg_cos_loss, np.sqrt(mse_V), np.sqrt(mse_A), CCC_Valence, CCC_Arousal, Corr_V, Corr_A, scores, accuracy, F1, ECE, MCE, NLL, brier
 
 def save_checkpoint(state, epoch, expt_name):
     print("==> Checkpoint saved")
