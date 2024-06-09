@@ -325,7 +325,6 @@ def evaluate_model(loader, model, num_classes, T=1, algo=None):
             GT_all.append(labels)
             
             onehot = convert_to_onehot(labels, num_classes).to(device) #convert classes to onehot representation
-                        
             CE_loss = negative_log_likelihood(class_pred, onehot, None)
             ce_losses.append(CE_loss.item())
             
