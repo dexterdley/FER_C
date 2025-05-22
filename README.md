@@ -1,6 +1,6 @@
 # FER_C
 FER-C: Benchmarking Out-of-Distribution Soft Calibration for Facial Expression Recognition
-Our benchmark is available publicly at: https://www.kaggle.com/datasets/dexterneo/fer-c-calibrated-facial-expression-recognition/data
+<!--- Our benchmark is available publicly at: https://www.kaggle.com/datasets/dexterneo/fer-c-calibrated-facial-expression-recognition/data -->
 
 ## Abstract
 We present a soft benchmark for calibrating facial expression recognition (FER). While prior works have focused on identifying affective states, we find that FER models are uncalibrated. This is particularly true when out-of-distribution (OOD) shifts further exacerbate the ambiguity of facial expressions. While most OOD benchmarks provide hard labels, we argue that the ground-truth labels for evaluating FER models should be soft in order to better reflect the ambiguity behind facial behaviours. Our framework proposes soft labels that closely approximate the average information loss based on different types of OOD shifts. We show the benefits of calibration on five state-of-the-art FER algorithms tested on our benchmark.
